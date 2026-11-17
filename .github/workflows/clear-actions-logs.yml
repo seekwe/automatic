@@ -1,0 +1,50 @@
+name: Clear Actions Logs
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: clear-actions-logs
+  cancel-in-progress: false
+
+jobs:
+  clear:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete all workflow runs except current
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Fetching workflow runs for ${REPO}..."
+          deleted=0
+          failed=0
+
+          while IFS= read -r run_id; do
+            [ -n "$run_id" ] || continue
+            if [ "$run_id" = "$CURRENT_RUN_ID" ]; then
+              echo "Skip current run: ${run_id}"
+              continue
+            fi
+
+            echo "Deleting run: ${run_id}"
+            if gh api -X DELETE "repos/${REPO}/actions/runs/${run_id}" >/dev/null 2>&1; then
+              deleted=$((deleted + 1))
+            else
+              echo "Failed to delete run: ${run_id}" >&2
+              failed=$((failed + 1))
+            fi
+          done < <(gh api --paginate "/repos/${REPO}/actions/runs?per_page=100" --jq '.workflow_runs[].id')
+
+          echo "Done. deleted=${deleted} failed=${failed}"
+          if [ "$failed" -gt 0 ]; then
+            exit 1
+          fi
