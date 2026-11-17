@@ -11,7 +11,7 @@ on:
       source_ref:
         required: true
         type: string
-        default: main
+        default: master
         description: zuno branch, tag, bare 40-character SHA, or full CNB commit URL.
       version:
         required: true
