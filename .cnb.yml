@@ -1,0 +1,10 @@
+include:
+  - https://cnb.cool/zls-tools/vm/-/blob/main/tools/sync-github-seekwe.yml
+
+
+$:
+  push:
+    sync_seekwe_github:
+      env:
+        BRANCHS: main,dev
+        FORCE_PUSH: true
