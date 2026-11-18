@@ -1,4 +1,4 @@
-name: Clear Actions Logs
+name: Clear
 
 on:
   workflow_dispatch:
