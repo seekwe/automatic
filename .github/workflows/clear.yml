@@ -46,5 +46,5 @@ jobs:
 
           echo "Done. deleted=${deleted} failed=${failed}"
           if [ "$failed" -gt 0 ]; then
-            exit 1
+            echo "Some runs could not be deleted, but failures are ignored."
           fi
