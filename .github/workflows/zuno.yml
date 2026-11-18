@@ -1,4 +1,4 @@
-name: Build zuno Release
+name: Build Zuno Release
 
 on:
   push:
