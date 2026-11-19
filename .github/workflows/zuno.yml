@@ -29,6 +29,11 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
   SOURCE_URL: https://cnb.cool/zls_nmtx/sohaha/zuno
   RELEASE_PUBLIC_BASE_URL: https://releases.73zls.com/zuno
+  # Rolling GitHub release mirror: the same binaries, changelog and manifest
+  # the R2 bucket serves, republished under one fixed release that is
+  # overwritten on every run.
+  GITHUB_RELEASE_TAG: zuno-releases
+  GITHUB_RELEASE_NAME: Zuno Releases
   R2_BUCKET: releases
   R2_PREFIX: zuno
   ZUNO_CI: '1'
@@ -429,6 +434,10 @@ jobs:
   publish:
     needs: [resolve, build-macos, build-windows, build-linux]
     runs-on: ubuntu-latest
+    # The rolling GitHub release is written by this job only; every other job
+    # keeps the read-only default set at the top of the file.
+    permissions:
+      contents: write
     steps:
       - uses: actions/setup-node@v4
         with:
@@ -550,6 +559,91 @@ jobs:
           cp "$inputs/changelog.json" "${RUNNER_TEMP}/release-publish/changelog.json"
           cp "$inputs/CHANGELOG.md" "${RUNNER_TEMP}/release-publish/CHANGELOG.md"
           cat "${RUNNER_TEMP}/release-publish/latest.json"
+
+      - name: Upload release to GitHub
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          TAG: ${{ env.GITHUB_RELEASE_TAG }}
+          NAME: ${{ env.GITHUB_RELEASE_NAME }}
+        run: |
+          set -euo pipefail
+          publish_dir="${RUNNER_TEMP}/release-publish"
+          gh_dir="${RUNNER_TEMP}/release-github"
+          rm -rf "$gh_dir"
+          mkdir -p "$gh_dir"
+
+          # GitHub serves its own asset URLs, so this copy of latest.json points
+          # at github.com. The R2 copy published below keeps the
+          # releases.73zls.com URLs it was generated with.
+          asset_base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          release_url="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
+          jq --arg base "$asset_base" --arg notes "$release_url" \
+            '.assets |= map(.url = ($base + "/" + .name)) | .releaseNotesUrl = $notes' \
+            "$publish_dir/latest.json" > "$gh_dir/latest.json"
+
+          zip_count=$(find "$publish_dir" -maxdepth 1 -name '*.zip' | wc -l)
+          test "$zip_count" -gt 0 || {
+            echo "no release ZIPs found in $publish_dir"
+            exit 1
+          }
+          cp "$publish_dir/CHANGELOG.md" "$publish_dir/changelog.json" "$gh_dir/"
+          cp "$publish_dir"/*.zip "$gh_dir/"
+
+          # The release body always carries the entry for the version being
+          # published, so the page never lags the binaries it documents.
+          notes_file="${RUNNER_TEMP}/github-notes.md"
+          {
+            awk -v ver="$VERSION" '
+              BEGIN { head = "## v" ver; hlen = length(head); on = 0 }
+              !on {
+                if (substr($0, 1, hlen) == head && (length($0) == hlen || substr($0, hlen + 1, 1) == " ")) {
+                  on = 1
+                  print
+                }
+                next
+              }
+              /^## v/ { exit }
+              { print }
+            ' "$publish_dir/CHANGELOG.md"
+            echo
+            echo "**下载 / Download:** ${release_url}"
+            echo
+            echo "资产说明：安装包 ZIP、\`CHANGELOG.md\`、\`changelog.json\`，以及 \`latest.json\`（其中下载地址已指向本仓库的 release 资产）。"
+          } > "$notes_file"
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; updating it."
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "$NAME" --notes-file "$notes_file" --latest
+          else
+            echo "Creating release $TAG."
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "$NAME" --notes-file "$notes_file" \
+              --target "$GITHUB_SHA" --latest
+          fi
+
+          # Drop assets that no longer belong to this release (for example the
+          # previous version's ZIPs) before uploading the new set.
+          while read -r asset || [[ -n "$asset" ]]; do
+            [[ -n "$asset" ]] || continue
+            if [[ ! -f "$gh_dir/$asset" ]]; then
+              printf '  delete asset %s\n' "$asset"
+              gh release delete-asset "$TAG" "$asset" --repo "$GITHUB_REPOSITORY" --yes >/dev/null || true
+            fi
+          done < <(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+
+          # Binaries and docs first, latest.json last: a client reading the
+          # manifest can never see an entry whose asset is not uploaded yet.
+          mapfile -t uploads < <(find "$gh_dir" -maxdepth 1 -type f ! -name 'latest.json' -print | sort)
+          [[ "${#uploads[@]}" -gt 0 ]] || {
+            echo "no GitHub release assets to upload"
+            exit 1
+          }
+          gh release upload "$TAG" "${uploads[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+          gh release upload "$TAG" "$gh_dir/latest.json" --repo "$GITHUB_REPOSITORY" --clobber
+          echo "Published GitHub release: $release_url"
 
       - name: Upload latest release to R2
         shell: bash
